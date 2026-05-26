@@ -1,8 +1,8 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useRef, useEffect } from 'react';
 import {
   TrendingUp, AlertTriangle, Plus, Trash2, Zap,
-  CreditCard, BarChart2, Bell, X, Check, ChevronRight,
-  Wifi, Clock
+  CreditCard, BarChart2, Bell, X, Check,
+  Wifi, Clock, MessageCircle, Send, Bot, User, Key
 } from 'lucide-react';
 
 // ─── Seed Data ────────────────────────────────────────────────────────────────
@@ -398,11 +398,309 @@ function AddForm({ onAdd, onClose }) {
   );
 }
 
+// ─── AI Chat Component ────────────────────────────────────────────────────────
+
+function AIChat({ subs, stats, onClose }) {
+  const [messages, setMessages] = useState([
+    {
+      role: 'assistant',
+      text: `Hi! 👋 I'm your subscription analyst. I can see you have **${subs.length} subscriptions** costing **₹${Math.round(stats.monthly).toLocaleString('en-IN')}/month**. Ask me anything!\n\nFor example:\n• "Which subscriptions am I wasting money on?"\n• "How much do I spend on streaming?"\n• "Where can I save the most money?"`,
+    }
+  ]);
+  const [input, setInput] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [apiKey, setApiKey] = useState(localStorage.getItem('groq_key') || import.meta.env.VITE_GROQ_API_KEY || '');
+  const [showKeyInput, setShowKeyInput] = useState(!localStorage.getItem('groq_key'));
+  const bottomRef = useRef(null);
+
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages, loading]);
+
+  const saveKey = () => {
+    localStorage.setItem('groq_key', apiKey);
+    setShowKeyInput(false);
+  };
+
+  const buildContext = () => {
+    const subList = subs.map(s => {
+      const days = Math.floor((new Date() - new Date(s.lastUsed)) / 86400000);
+      const monthly = s.cycle === 'yearly' ? s.cost / 12 : s.cost;
+      return `- ${s.name} (${s.category}): ₹${monthly.toFixed(0)}/month, last used ${days} days ago${days > 30 ? ' ⚠️ UNUSED' : ''}`;
+    }).join('\n');
+
+    const altList = Object.entries(ALTERNATIVES)
+      .filter(([name]) => subs.some(s => s.name === name))
+      .map(([name, alt]) => `- ${name} → ${alt.name} saves ₹${alt.saving}/month`)
+      .join('\n');
+
+    return `You are a smart personal finance assistant inside a subscription tracker app. 
+The user's subscription data is below. Answer in a friendly, concise way. Use ₹ for currency. Be specific with numbers.
+
+SUBSCRIPTIONS:
+${subList}
+
+SUMMARY:
+- Total monthly spend: ₹${Math.round(stats.monthly).toLocaleString('en-IN')}
+- Annual forecast: ₹${Math.round(stats.annual).toLocaleString('en-IN')}
+- Unused subscriptions (30+ days): ${stats.unused.map(s => s.name).join(', ') || 'None'}
+- Monthly waste on unused: ₹${Math.round(stats.wasteCost).toLocaleString('en-IN')}
+
+CHEAPER ALTERNATIVES AVAILABLE:
+${altList || 'None mapped yet'}
+
+Answer the user's question based on this data. Keep responses concise and helpful.`;
+  };
+
+  const sendMessage = async () => {
+    if (!input.trim() || loading) return;
+    if (!apiKey) { setShowKeyInput(true); return; }
+
+    const userMsg = { role: 'user', text: input };
+    setMessages(prev => [...prev, userMsg]);
+    setInput('');
+    setLoading(true);
+
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`,
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          max_tokens: 500,
+          messages: [
+            { role: 'system', content: buildContext() },
+            ...messages
+              .filter(m => m.role === 'user' || (m.role === 'assistant' && m !== messages[0]))
+              .map(m => ({ role: m.role, content: m.text })),
+            { role: 'user', content: input },
+          ],
+        }),
+      });
+
+      const data = await response.json();
+
+      if (data.error) {
+        setMessages(prev => [...prev, { role: 'assistant', text: `❌ Error: ${data.error.message}` }]);
+      } else {
+        setMessages(prev => [...prev, { role: 'assistant', text: data.choices[0].message.content }]);
+      }
+    } catch (err) {
+      setMessages(prev => [...prev, { role: 'assistant', text: '❌ Could not connect. Check your API key and try again.' }]);
+    }
+
+    setLoading(false);
+  };
+
+  const renderText = (text) => {
+    return text.split('\n').map((line, i) => (
+      <div key={i} style={{ marginBottom: line === '' ? 6 : 2 }}>
+        {line.split(/\*\*(.*?)\*\*/g).map((part, j) =>
+          j % 2 === 1 ? <strong key={j} style={{ color: 'var(--amber)' }}>{part}</strong> : part
+        )}
+      </div>
+    ));
+  };
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, zIndex: 200,
+      display: 'flex', alignItems: 'flex-end', justifyContent: 'flex-end',
+      padding: 24,
+      pointerEvents: 'none',
+    }}>
+      <div style={{
+        width: '100%', maxWidth: 400, height: 560,
+        background: 'var(--card)',
+        border: '1px solid var(--border-2)',
+        borderRadius: 20,
+        display: 'flex', flexDirection: 'column',
+        overflow: 'hidden',
+        pointerEvents: 'all',
+        animation: 'fadeUp 0.3s ease',
+        boxShadow: '0 24px 64px rgba(0,0,0,0.5)',
+      }}>
+
+        {/* Header */}
+        <div style={{
+          padding: '16px 20px',
+          borderBottom: '1px solid var(--border)',
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          background: 'var(--surface)',
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+            <div style={{
+              width: 34, height: 34, borderRadius: 10,
+              background: 'var(--amber-dim)', border: '1px solid var(--amber-glow)',
+              display: 'flex', alignItems: 'center', justifyContent: 'center',
+              color: 'var(--amber)',
+            }}>
+              <Bot size={16} />
+            </div>
+            <div>
+              <div style={{ fontWeight: 700, fontSize: 14 }}>SubTrack AI</div>
+              <div style={{ fontSize: 11, color: 'var(--green)' }}>● Analyzing your subscriptions</div>
+            </div>
+          </div>
+          <div style={{ display: 'flex', gap: 8 }}>
+            <button
+              onClick={() => setShowKeyInput(s => !s)}
+              title="API Key settings"
+              style={{
+                background: 'var(--border)', border: 'none', borderRadius: 8,
+                padding: '6px', cursor: 'pointer', color: 'var(--text-2)',
+                display: 'flex',
+              }}
+            >
+              <Key size={13} />
+            </button>
+            <button onClick={onClose} style={{
+              background: 'var(--border)', border: 'none', borderRadius: 8,
+              padding: '6px', cursor: 'pointer', color: 'var(--text-2)', display: 'flex',
+            }}>
+              <X size={13} />
+            </button>
+          </div>
+        </div>
+
+        {/* API Key input */}
+        {showKeyInput && (
+          <div style={{
+            padding: '12px 16px',
+            background: 'var(--blue-dim)',
+            borderBottom: '1px solid rgba(59,130,246,0.2)',
+            display: 'flex', gap: 8,
+          }}>
+            <input
+              placeholder="Paste your Groq API key..."
+              value={apiKey}
+              onChange={e => setApiKey(e.target.value)}
+              type="password"
+              style={{
+                flex: 1, background: 'var(--bg)', border: '1px solid var(--border-2)',
+                borderRadius: 8, padding: '7px 10px', color: 'var(--text)',
+                fontFamily: 'var(--font-mono)', fontSize: 12, outline: 'none',
+              }}
+            />
+            <button onClick={saveKey} style={{
+              background: 'var(--amber)', border: 'none', borderRadius: 8,
+              padding: '7px 12px', color: '#0a0f1e', fontWeight: 700,
+              fontSize: 12, cursor: 'pointer', fontFamily: 'var(--font-head)',
+            }}>Save</button>
+          </div>
+        )}
+
+        {/* Messages */}
+        <div style={{
+          flex: 1, overflowY: 'auto', padding: '16px',
+          display: 'flex', flexDirection: 'column', gap: 14,
+        }}>
+          {messages.map((msg, i) => (
+            <div key={i} style={{
+              display: 'flex', gap: 10,
+              flexDirection: msg.role === 'user' ? 'row-reverse' : 'row',
+            }}>
+              <div style={{
+                flexShrink: 0, width: 28, height: 28, borderRadius: 8,
+                background: msg.role === 'user' ? 'var(--amber-dim)' : 'rgba(16,185,129,0.15)',
+                border: `1px solid ${msg.role === 'user' ? 'var(--amber-glow)' : 'rgba(16,185,129,0.2)'}`,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: msg.role === 'user' ? 'var(--amber)' : 'var(--green)',
+              }}>
+                {msg.role === 'user' ? <User size={13} /> : <Bot size={13} />}
+              </div>
+              <div style={{
+                maxWidth: '80%',
+                background: msg.role === 'user' ? 'var(--amber-dim)' : 'var(--surface)',
+                border: `1px solid ${msg.role === 'user' ? 'var(--amber-glow)' : 'var(--border)'}`,
+                borderRadius: msg.role === 'user' ? '14px 4px 14px 14px' : '4px 14px 14px 14px',
+                padding: '10px 14px',
+                fontSize: 13, lineHeight: 1.6, color: 'var(--text)',
+              }}>
+                {renderText(msg.text)}
+              </div>
+            </div>
+          ))}
+
+          {loading && (
+            <div style={{ display: 'flex', gap: 10 }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: 8,
+                background: 'rgba(16,185,129,0.15)',
+                border: '1px solid rgba(16,185,129,0.2)',
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                color: 'var(--green)',
+              }}>
+                <Bot size={13} />
+              </div>
+              <div style={{
+                background: 'var(--surface)', border: '1px solid var(--border)',
+                borderRadius: '4px 14px 14px 14px', padding: '12px 16px',
+                display: 'flex', gap: 5, alignItems: 'center',
+              }}>
+                {[0, 1, 2].map(i => (
+                  <div key={i} style={{
+                    width: 6, height: 6, borderRadius: '50%',
+                    background: 'var(--text-3)',
+                    animation: `pulse-amber 1.2s ease ${i * 0.2}s infinite`,
+                  }} />
+                ))}
+              </div>
+            </div>
+          )}
+          <div ref={bottomRef} />
+        </div>
+
+        {/* Input */}
+        <div style={{
+          padding: '12px 16px',
+          borderTop: '1px solid var(--border)',
+          display: 'flex', gap: 8,
+        }}>
+          <input
+            placeholder="Ask about your subscriptions..."
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && sendMessage()}
+            style={{
+              flex: 1, background: 'var(--bg)',
+              border: '1px solid var(--border-2)',
+              borderRadius: 10, padding: '9px 14px',
+              color: 'var(--text)', fontFamily: 'var(--font-head)',
+              fontSize: 13, outline: 'none',
+            }}
+            onFocus={e => e.target.style.borderColor = 'var(--amber)'}
+            onBlur={e => e.target.style.borderColor = 'var(--border-2)'}
+          />
+          <button
+            onClick={sendMessage}
+            disabled={loading || !input.trim()}
+            style={{
+              background: loading || !input.trim() ? 'var(--border)' : 'var(--amber)',
+              border: 'none', borderRadius: 10,
+              padding: '9px 14px', cursor: loading ? 'not-allowed' : 'pointer',
+              color: loading || !input.trim() ? 'var(--text-3)' : '#0a0f1e',
+              display: 'flex', alignItems: 'center',
+              transition: 'all 0.15s',
+            }}
+          >
+            <Send size={14} />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Main App ─────────────────────────────────────────────────────────────────
 
 export default function App() {
   const [subs, setSubs] = useState(SEED_SUBSCRIPTIONS);
   const [showForm, setShowForm] = useState(false);
+  const [showChat, setShowChat] = useState(false);
   const [plaidStatus, setPlaidStatus] = useState('idle'); // idle | connecting | connected
   const [filter, setFilter] = useState('all'); // all | unused | active
 
@@ -698,6 +996,31 @@ export default function App() {
 
       {/* ── Add Form Modal ── */}
       {showForm && <AddForm onAdd={addSub} onClose={() => setShowForm(false)} />}
+
+      {/* ── AI Chat ── */}
+      {showChat && <AIChat subs={subs} stats={stats} onClose={() => setShowChat(false)} />}
+
+      {/* ── Floating AI Button ── */}
+      {!showChat && (
+        <button
+          onClick={() => setShowChat(true)}
+          style={{
+            position: 'fixed', bottom: 28, right: 28, zIndex: 150,
+            width: 56, height: 56, borderRadius: '50%',
+            background: 'var(--amber)',
+            border: 'none', cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            boxShadow: '0 8px 32px var(--amber-glow)',
+            animation: 'pulse-amber 2s infinite',
+            transition: 'transform 0.2s',
+          }}
+          onMouseEnter={e => e.currentTarget.style.transform = 'scale(1.1)'}
+          onMouseLeave={e => e.currentTarget.style.transform = 'scale(1)'}
+          title="Ask AI about your subscriptions"
+        >
+          <MessageCircle size={22} color="#0a0f1e" strokeWidth={2.5} />
+        </button>
+      )}
     </div>
   );
 }
